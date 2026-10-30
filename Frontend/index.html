@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0b1220">
+    <title>EV CAN | Monitoring Studio</title>
+    <link rel="stylesheet" href="/static/Style.css">
+    <script src="/static/Script.js" defer></script>
+</head>
+<body>
+    <aside class="sidebar">
+        <a class="brand" href="/" aria-label="EV CAN home">
+            <span class="brand-mark"><span></span><span></span><span></span></span>
+            <span><strong>EV <em>CAN</em></strong><small>Monitoring Studio</small></span>
+        </a>
+
+        <div class="nav-caption">WORKSPACE</div>
+        <nav>
+            
+<button class="nav-button active" data-view="dashboard">
+    <span class="nav-icon">▦</span> Live CAN Monitor
+</button>
+</nav>
+
+
+        <div class="sidebar-bottom">
+            <div class="side-status">
+                <span id="statusDot" class="status-dot"></span>
+                <div><strong id="connectionText">Checking adapter…</strong><small>PCAN interface</small></div>
+            </div>
+            <div class="sidebar-footnote">LISTEN-ONLY MODE<br><span>No CAN messages transmitted</span></div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="topbar">
+            <div>
+                <div class="eyebrow">VEHICLE NETWORK / DIAGNOSTICS</div>
+                <h1 id="pageTitle">CAN overview</h1>
+                <p class="page-subtitle">Monitor incoming frames and translate bytes into engineering signals.</p>
+                
+<!-- CAN Recording Controls -->
+<section class="recording-panel" aria-label="CAN recording controls">
+    <div class="recording-info">
+        <span id="recordingIndicator" class="recording-indicator"></span>
+        <div>
+            <h3 id="recordingStatus">Recording stopped</h3>
+            <p id="recordingCount">0 frames recorded</p>
+        </div>
+    </div>
+
+    <div class="recording-actions">
+        <button id="startRecordingBtn" type="button">
+            ● Start Recording
+        </button>
+
+        <button id="stopRecordingBtn" type="button" disabled>
+            ■ Stop Recording
+        </button>
+
+        <button id="exportRecordingBtn" type="button">
+            ↓ Export CSV
+        </button>
+    </div>
+</section>
+
+            </div>
+            <div class="top-actions">
+                <div class="dbc-pill" id="dbcPill"><span class="mini-dot"></span><span id="dbcText">Checking DBC…</span></div>
+            </div>
+        </header>
+
+        <section class="connection-banner" id="connectionBanner">
+            <div class="banner-icon">i</div>
+            <div><strong id="bannerTitle">Waiting for connection status</strong><p id="bannerMessage">The dashboard will show the actual PCAN and DBC status here.</p></div>
+        </section>
+
+        <section id="dashboardView">
+            <div class="metric-grid">
+                <article class="metric-card">
+                    <div class="metric-top"><span>CONNECTION</span><span class="metric-symbol">◉</span></div>
+                    <div class="metric-value" id="connectionValue">Checking…</div>
+                    <div class="metric-foot"><span class="status-dot" id="metricStatusDot"></span><span id="connectionDetail">PCAN USB</span></div>
+                </article>
+                <article class="metric-card">
+                    <div class="metric-top"><span>FRAMES CAPTURED</span><span class="metric-symbol">⌁</span></div>
+                    <div class="metric-value" id="frameCount">0</div>
+                    <div class="metric-foot">Most recent 200 frames in memory</div>
+                </article>
+                <article class="metric-card">
+                    <div class="metric-top"><span>UNIQUE CAN IDs</span><span class="metric-symbol">#</span></div>
+                    <div class="metric-value" id="uniqueIdCount">0</div>
+                    <div class="metric-foot">Distinct IDs seen this session</div>
+                </article>
+                <article class="metric-card accent-card">
+                    <div class="metric-top"><span>DBC-DECODED FRAMES</span><span class="metric-symbol">✓</span></div>
+                    <div class="metric-value" id="decodedCount">0</div>
+                    <div class="metric-foot"><span id="dbcSummary">Waiting for DBC status</span></div>
+                </article>
+            </div>
+
+            <section class="panel bms-panel">
+                <div class="panel-heading">
+                    <div><div class="section-kicker">BATTERY MANAGEMENT SYSTEM</div><h2>Latest decoded BMS values</h2><p>Live values extracted from received CAN frames using your local DBC.</p></div>
+                    <span id="bmsSignalCount" class="result-count">0 signals</span>
+                </div>
+                <div id="bmsSignalGrid" class="bms-signal-grid">
+                    <div class="signal-empty">Waiting for decoded BMS signals. Connect to a CAN bus with active traffic.</div>
+                </div>
+                <p class="table-note">All unique decoded signals found in the most recent received frames are listed below. Each card shows the latest value received for that signal. Missing signals are not estimated.</p>
+            </section>
+
+            <section class="panel" hidden>
+                <div class="panel-heading">
+                    <div><div class="section-kicker">CAPTURE STREAM</div><h2>Recent CAN frames</h2><p>Raw payload and decoded signal values side by side.</p></div>
+                    <button id="openLiveButton" class="button button-primary">Open live monitor <span>↗</span></button>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Timestamp</th><th>CAN ID</th><th>Message / DBC</th><th>DLC</th><th>Raw data (HEX)</th><th>Decoded values</th></tr></thead>
+                        <tbody id="dashboardTable"><tr><td colspan="6" class="empty">No frames received yet. Connect the PCAN adapter to see live data.</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <section id="liveView" hidden>
+            <section class="panel">
+                <div class="panel-heading">
+                    <div><div class="section-kicker">LIVE STREAM</div><h2>Live CAN monitor</h2><p>Search raw bytes, CAN IDs, message names, or decoded signal values.</p></div>
+                    <button id="clearButton" class="button button-quiet">Clear display</button>
+                </div>
+                <div class="toolbar">
+                    <label class="search-box"><span>⌕</span><input id="searchInput" type="search" placeholder="Search ID, signal, value, or raw data…"></label>
+                    <label class="filter-box">Decode status
+                        <select id="decodeFilter"><option value="all">All frames</option><option value="decoded">Decoded</option><option value="unmatched">Not in DBC</option><option value="dbc_unavailable">DBC unavailable</option></select>
+                    </label>
+                    <span id="visibleCount" class="result-count">0 frames</span>
+                </div>
+                <div class="table-wrapper">
+                    <table class="wide-table">
+                        <thead><tr><th>Timestamp</th><th>CAN ID</th><th>Message name</th><th>DLC</th><th>Raw data (HEX)</th><th>Decoded signals</th><th>Format</th></tr></thead>
+                        <tbody id="liveTable"><tr><td colspan="7" class="empty">Waiting for CAN frames…</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="table-note">Decoded values are generated from the local DBC definition. A CAN ID not found in the DBC stays visible as raw data.</div>
+            </section>
+        </section>
+
+        <section id="idsView" hidden>
+            <section class="panel">
+                <div class="panel-heading">
+                    <div><div class="section-kicker">NETWORK INVENTORY</div><h2>Observed CAN IDs</h2><p>Every unique identifier received since the backend started.</p></div>
+                    <button id="refreshNowButton" class="button button-primary">Refresh now ↻</button>
+                </div>
+                <div class="toolbar">
+                    <label class="search-box"><span>⌕</span><input id="idSearchInput" type="search" placeholder="Search CAN ID…"></label>
+                    <span id="idVisibleCount" class="result-count">0 IDs</span>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>#</th><th>CAN ID</th><th>CAN format</th><th>DBC match</th><th>Message name</th></tr></thead>
+                        <tbody id="idsTable"><tr><td colspan="5" class="empty">No CAN IDs received yet.</td></tr></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+
+        <footer><span>EV CAN Monitoring Studio</span><span>Python · FastAPI · python-can · cantools</span></footer>
+    </main>
+</body>
+</html>
