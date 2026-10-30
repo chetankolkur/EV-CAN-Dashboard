@@ -8,6 +8,10 @@ import time
 import requests
 import csv  # exporting in .csv formate
 import io
+import os
+import secrets
+
+from fastapi import Header, HTTPException
 
 import can
 import cantools
@@ -173,12 +177,59 @@ def decode_frame(arbitration_id, data, is_extended_id):
         return result
 
 
-
-
-
 def read_can_frames():
-    """Receive CAN frames and track signal values during recording."""
+    """Read local PCAN frames and forward them to Render."""
+    import os
+    import queue
+    import threading
+    import requests
+
     global can_status
+
+    # Configure these environment variables on your laptop.
+    render_url = os.getenv("RENDER_CAN_INGEST_URL", "").rstrip("/")
+    ingest_token = os.getenv("CAN_INGEST_TOKEN", "")
+
+    # Queue frames so network requests don't block CAN reading.
+    outgoing_frames = queue.Queue(maxsize=1000)
+    stop_sender = threading.Event()
+
+    def send_frames_to_render():
+        """Send CAN frames to the cloud in the background."""
+        if not render_url or not ingest_token:
+            print(
+                "Render forwarding disabled. "
+                "Configure RENDER_CAN_INGEST_URL and CAN_INGEST_TOKEN."
+            )
+            return
+
+        endpoint = f"{render_url}/api/ingest-can"
+        headers = {"Authorization": f"Bearer {ingest_token}"}
+
+        while not stop_sender.is_set():
+            try:
+                frame = outgoing_frames.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                response = requests.post(
+                    endpoint,
+                    json={"frame": frame},
+                    headers=headers,
+                    timeout=3
+                )
+                response.raise_for_status()
+            except requests.RequestException as error:
+                print(f"Render forwarding error: {error}")
+            finally:
+                outgoing_frames.task_done()
+
+    sender_thread = threading.Thread(
+        target=send_frames_to_render,
+        daemon=True
+    )
+    sender_thread.start()
 
     try:
         with can.Bus(
@@ -193,13 +244,11 @@ def read_can_frames():
             }
             print("PCAN connected. Listening for CAN frames...")
 
-            # Initialize the snapshot timer.
             last_snapshot_time = time.time()
 
             while not stop_event.is_set():
                 current_time = time.time()
 
-                # Create snapshots every second while recording.
                 with recording_lock:
                     should_snapshot = (
                         recording_active
@@ -211,8 +260,6 @@ def read_can_frames():
                     create_signal_snapshot()
                     last_snapshot_time = current_time
 
-                # Receive a CAN frame; the loop continues even when
-                # no frame arrives, so the snapshot timer still runs.
                 msg = bus.recv(timeout=0.1)
 
                 if msg is None:
@@ -234,12 +281,12 @@ def read_can_frames():
                     **decoded
                 }
 
-                # Update the live dashboard buffer.
+                # Preserve the existing local dashboard buffer.
                 with data_lock:
                     frames.appendleft(frame)
                     unique_can_ids.add(frame["can_id"])
 
-                # Record actual frames and update the latest signal values.
+                # Preserve the existing recording and signal tracking.
                 with recording_lock:
                     if recording_active:
                         recorded_frames.append(frame.copy())
@@ -254,6 +301,16 @@ def read_can_frames():
                                 "timestamp": frame["timestamp"]
                             }
 
+                # Forward a copy to the background sender.
+                if render_url and ingest_token:
+                    try:
+                        outgoing_frames.put_nowait(frame.copy())
+                    except queue.Full:
+                        print(
+                            "Render forwarding queue full; "
+                            "this frame was skipped."
+                        )
+
                 print(
                     f"CAN ID: {frame['can_id']} | "
                     f"Message: {frame['message_name']} | "
@@ -267,6 +324,7 @@ def read_can_frames():
             "message": f"PCAN unavailable: {error}"
         }
         print(f"PCAN unavailable: {error}")
+
 
 
 
@@ -295,7 +353,10 @@ def home():
 def get_can_data():
     with data_lock:
         current_frames = list(frames)
-        current_ids = sorted(unique_can_ids, key=lambda can_id: int(can_id, 16))
+        current_ids = sorted(
+            unique_can_ids,
+            key=lambda can_id: int(can_id, 16)
+        )
 
     return {
         "status": can_status,
@@ -303,9 +364,76 @@ def get_can_data():
         "total_frames": len(current_frames),
         "total_unique_can_ids": len(current_ids),
         "unique_can_ids": current_ids,
-        "decoded_frames": sum(1 for frame in current_frames if frame["decode_status"] == "decoded"),
+        "decoded_frames": sum(
+            1 for frame in current_frames
+            if frame["decode_status"] == "decoded"
+        ),
         "frames": current_frames
     }
+
+
+
+@app.post("/api/ingest-can")
+def ingest_can_frame(
+    payload: dict,
+    authorization: str | None = Header(default=None)
+):
+    global can_status
+
+    # 1. Verify the secret token
+    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
+    supplied_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization
+        else ""
+    )
+
+    if not expected_token or not secrets.compare_digest(
+        supplied_token, expected_token
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized"
+        )
+
+    # 2. Validate the incoming CAN frame
+    frame = payload.get("frame")
+
+    if not isinstance(frame, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid CAN frame"
+        )
+
+    required_fields = {
+        "timestamp",
+        "can_id",
+        "numeric_id",
+        "dlc",
+        "data",
+        "extended",
+        "message_name",
+        "decode_status"
+    }
+
+    if not required_fields.issubset(frame):
+        raise HTTPException(
+            status_code=400,
+            detail="Incomplete CAN frame"
+        )
+
+    # 3. Store the frame and update dashboard status
+    with data_lock:
+        frames.appendleft(frame)
+        unique_can_ids.add(frame["can_id"])
+
+        can_status = {
+            "connected": True,
+            "message": "Receiving CAN frames from local PCAN."
+        }
+
+    return {"ok": True}
+
 
 @app.post("/api/recording/start")
 def start_recording():
@@ -322,12 +450,12 @@ def start_recording():
                 "message": "Recording is already active."
             }
 
-        # Clear data from the previous recording.
+        # Clear data from the previous recording
         recorded_frames = []
         latest_signal_values = {}
         signal_history = []
 
-        # Start a new recording.
+        # Start a new recording
         recording_started_at = time.time()
         recording_active = True
 
@@ -336,8 +464,6 @@ def start_recording():
         "message": "Recording started.",
         "started_at": recording_started_at
     }
-
-
 
 
 @app.post("/api/recording/stop")
@@ -351,7 +477,7 @@ def stop_recording():
                 "message": "Recording is already stopped."
             }
 
-        # Save the final snapshot before stopping.
+        # Save the final signal snapshot before stopping
         if latest_signal_values:
             snapshot = {
                 "timestamp": time.time()
@@ -359,7 +485,9 @@ def stop_recording():
 
             for signal_name, signal_info in latest_signal_values.items():
                 snapshot[signal_name] = signal_info.get("value")
-                snapshot[f"{signal_name}_CAN_ID"] = signal_info.get("can_id")
+                snapshot[f"{signal_name}_CAN_ID"] = (
+                    signal_info.get("can_id")
+                )
 
             signal_history.append(snapshot)
 
@@ -385,23 +513,27 @@ def get_recording_status():
         }
 
 
-
 @app.get("/api/recording/export")
 def export_recording():
-    from fastapi import HTTPException
     from fastapi.responses import Response
 
-    # Copy recorded snapshots safely.
+    # Copy recorded snapshots safely
     with recording_lock:
-        export_snapshots = [snapshot.copy() for snapshot in signal_history]
+        export_snapshots = [
+            snapshot.copy()
+            for snapshot in signal_history
+        ]
 
     if not export_snapshots:
         raise HTTPException(
             status_code=400,
-            detail="No signal snapshots available. Start recording and receive CAN data first."
+            detail=(
+                "No signal snapshots available. Start recording "
+                "and receive CAN data first."
+            )
         )
 
-    # Collect signal names, excluding timestamps and CAN ID metadata.
+    # Collect signal names, excluding timestamps and CAN ID metadata
     signal_names = sorted({
         key
         for snapshot in export_snapshots
@@ -409,20 +541,20 @@ def export_recording():
         if key != "timestamp" and not key.endswith("_CAN_ID")
     })
 
-    # CSV contains only the timestamp and decoded signal values.
     columns = ["timestamp"] + signal_names
 
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=columns)
     writer.writeheader()
 
-    # Carry forward the latest actual value for each signal.
+    # Carry forward the latest recorded value for each signal
     latest_values = {}
 
     for snapshot in export_snapshots:
         latest_values.update(snapshot)
 
         timestamp = snapshot.get("timestamp")
+
         row = {
             "timestamp": (
                 time.strftime(
@@ -435,7 +567,9 @@ def export_recording():
         }
 
         for signal_name in signal_names:
-            row[signal_name] = latest_values.get(signal_name, "N/A")
+            row[signal_name] = latest_values.get(
+                signal_name, "N/A"
+            )
 
         writer.writerow(row)
 
@@ -450,5 +584,3 @@ def export_recording():
                 'attachment; filename="can_signal_history.csv"'
         }
     )
-
-   
