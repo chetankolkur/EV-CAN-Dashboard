@@ -10,6 +10,9 @@ import csv  # exporting in .csv formate
 import io
 import os
 import secrets
+import threading
+import queue
+import json
 
 from fastapi import Header, HTTPException
 
@@ -178,58 +181,87 @@ def decode_frame(arbitration_id, data, is_extended_id):
 
 
 def read_can_frames():
-    """Read local PCAN frames and forward them to Render."""
-    import os
-    import queue
-    import threading
-    import requests
-
+    """Read CAN frames from the local PCAN adapter and forward them to Render."""
     global can_status
 
-    # Configure these environment variables on your laptop.
     render_url = os.getenv("RENDER_CAN_INGEST_URL", "").rstrip("/")
     ingest_token = os.getenv("CAN_INGEST_TOKEN", "")
 
-    # Queue frames so network requests don't block CAN reading.
-    outgoing_frames = queue.Queue(maxsize=1000)
+    outgoing_frames = queue.Queue(maxsize=5000)
     stop_sender = threading.Event()
 
     def send_frames_to_render():
-        """Send CAN frames to the cloud in the background."""
+        """Forward small batches of CAN frames to Render."""
         if not render_url or not ingest_token:
             print(
-                "Render forwarding disabled. "
-                "Configure RENDER_CAN_INGEST_URL and CAN_INGEST_TOKEN."
+                "Render forwarding disabled. Configure "
+                "RENDER_CAN_INGEST_URL and CAN_INGEST_TOKEN."
             )
             return
 
         endpoint = f"{render_url}/api/ingest-can"
         headers = {"Authorization": f"Bearer {ingest_token}"}
+        batch_size = 50
 
-        while not stop_sender.is_set():
-            try:
-                frame = outgoing_frames.get(timeout=0.5)
-            except queue.Empty:
-                continue
+        # Batch requests reduce HTTP overhead and help prevent queue buildup.
+        with requests.Session() as session:
+            while not stop_sender.is_set() or not outgoing_frames.empty():
+                batch = []
 
-            try:
-                response = requests.post(
-                    endpoint,
-                    json={"frame": frame},
-                    headers=headers,
-                    timeout=3
-                )
-                response.raise_for_status()
-            except requests.RequestException as error:
-                print(f"Render forwarding error: {error}")
-            finally:
-                outgoing_frames.task_done()
+                try:
+                    first_frame = outgoing_frames.get(timeout=0.5)
+                    batch.append(first_frame)
+                except queue.Empty:
+                    continue
 
-    sender_thread = threading.Thread(
-        target=send_frames_to_render,
-        daemon=True
-    )
-    sender_thread.start()
+                # Collect any additional frames already waiting in the queue.
+                while len(batch) < batch_size:
+                    try:
+                        batch.append(outgoing_frames.get_nowait())
+                    except queue.Empty:
+                        break
+
+                try:
+                    # DBC choice values can include NamedSignalValue objects.
+                    # Convert the whole batch to JSON-safe primitive values.
+                    safe_batch = json.loads(json.dumps(batch, default=str))
+
+                    response = session.post(
+                        endpoint,
+                        json={"frames": safe_batch},
+                        headers=headers,
+                        timeout=15
+                    )
+
+                    if not response.ok:
+                        print(
+                            f"Render forwarding error: HTTP "
+                            f"{response.status_code}: {response.text[:500]}"
+                        )
+                    else:
+                        print(
+                            f"Render accepted {len(safe_batch)} CAN frame(s)."
+                        )
+                except requests.RequestException as error:
+                    print(f"Render forwarding network error: {error}")
+                except (TypeError, ValueError) as error:
+                    print(f"Frame JSON conversion error: {error}")
+                finally:
+                    for _ in batch:
+                        outgoing_frames.task_done()
+
+    if render_url and ingest_token:
+        sender_thread = threading.Thread(
+            target=send_frames_to_render,
+            daemon=True
+        )
+        sender_thread.start()
+    else:
+        print(
+            "Render forwarding disabled. Set "
+            "RENDER_CAN_INGEST_URL and CAN_INGEST_TOKEN in this terminal."
+        )
+
 
     try:
         with can.Bus(
@@ -252,8 +284,7 @@ def read_can_frames():
                 with recording_lock:
                     should_snapshot = (
                         recording_active
-                        and current_time - last_snapshot_time
-                        >= snapshot_interval
+                        and current_time - last_snapshot_time >= snapshot_interval
                     )
 
                 if should_snapshot:
@@ -261,7 +292,6 @@ def read_can_frames():
                     last_snapshot_time = current_time
 
                 msg = bus.recv(timeout=0.1)
-
                 if msg is None:
                     continue
 
@@ -281,19 +311,18 @@ def read_can_frames():
                     **decoded
                 }
 
-                # Preserve the existing local dashboard buffer.
+                # Update the local dashboard's live frame buffer.
                 with data_lock:
                     frames.appendleft(frame)
                     unique_can_ids.add(frame["can_id"])
 
-                # Preserve the existing recording and signal tracking.
+                # Preserve the existing local recording behavior.
                 with recording_lock:
                     if recording_active:
                         recorded_frames.append(frame.copy())
 
                         for signal in frame.get("decoded", []):
                             signal_name = signal["name"]
-
                             latest_signal_values[signal_name] = {
                                 "value": signal.get("value"),
                                 "can_id": frame["can_id"],
@@ -301,15 +330,12 @@ def read_can_frames():
                                 "timestamp": frame["timestamp"]
                             }
 
-                # Forward a copy to the background sender.
+                # Queue a copy for cloud forwarding without blocking CAN reads.
                 if render_url and ingest_token:
                     try:
                         outgoing_frames.put_nowait(frame.copy())
                     except queue.Full:
-                        print(
-                            "Render forwarding queue full; "
-                            "this frame was skipped."
-                        )
+                        print("Render forwarding queue full; this frame was skipped.")
 
                 print(
                     f"CAN ID: {frame['can_id']} | "
@@ -324,8 +350,8 @@ def read_can_frames():
             "message": f"PCAN unavailable: {error}"
         }
         print(f"PCAN unavailable: {error}")
-
-
+    finally:
+        stop_sender.set()
 
 
 @app.on_event("startup")
@@ -378,9 +404,9 @@ def ingest_can_frame(
     payload: dict,
     authorization: str | None = Header(default=None)
 ):
+    """Accept one frame (legacy format) or a batch of frames from local PCAN."""
     global can_status
 
-    # 1. Verify the secret token
     expected_token = os.getenv("CAN_INGEST_TOKEN", "")
     supplied_token = (
         authorization.removeprefix("Bearer ").strip()
@@ -391,19 +417,21 @@ def ingest_can_frame(
     if not expected_token or not secrets.compare_digest(
         supplied_token, expected_token
     ):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized"
-        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # 2. Validate the incoming CAN frame
-    frame = payload.get("frame")
-
-    if not isinstance(frame, dict):
+    # Backward-compatible input: {"frame": {...}} or batch input {"frames": [...]}.
+    if isinstance(payload.get("frames"), list):
+        incoming_frames = payload["frames"]
+    elif isinstance(payload.get("frame"), dict):
+        incoming_frames = [payload["frame"]]
+    else:
         raise HTTPException(
             status_code=400,
-            detail="Invalid CAN frame"
+            detail="Expected a 'frame' object or a 'frames' list"
         )
+
+    if not incoming_frames:
+        raise HTTPException(status_code=400, detail="No CAN frames supplied")
 
     required_fields = {
         "timestamp",
@@ -416,23 +444,38 @@ def ingest_can_frame(
         "decode_status"
     }
 
-    if not required_fields.issubset(frame):
-        raise HTTPException(
-            status_code=400,
-            detail="Incomplete CAN frame"
-        )
+    # Validate the complete batch before storing any part of it.
+    for index, frame in enumerate(incoming_frames):
+        if not isinstance(frame, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Frame at index {index} is not an object"
+            )
 
-    # 3. Store the frame and update dashboard status
+        missing_fields = required_fields.difference(frame.keys())
+        if missing_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Frame at index {index} is missing required fields: "
+                    f"{', '.join(sorted(missing_fields))}"
+                )
+            )
+
     with data_lock:
-        frames.appendleft(frame)
-        unique_can_ids.add(frame["can_id"])
+        for frame in incoming_frames:
+            frames.appendleft(frame)
+            unique_can_ids.add(frame["can_id"])
 
         can_status = {
             "connected": True,
-            "message": "Receiving CAN frames from local PCAN."
+            "message": (
+                f"Receiving CAN frames from local PCAN "
+                f"({len(incoming_frames)} in last batch)."
+            )
         }
 
-    return {"ok": True}
+    return {"ok": True, "accepted": len(incoming_frames)}
 
 
 @app.post("/api/recording/start")
