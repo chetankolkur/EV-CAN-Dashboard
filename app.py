@@ -205,61 +205,75 @@ def read_can_frames():
                 try:
                     response = session.post(endpoint, headers=headers, timeout=5)
                     if not response.ok:
-                        print(
-                            f"Render heartbeat error: HTTP "
-                            f"{response.status_code}: {response.text[:300]}"
-                        )
+                        print("HEARTBEAT DEBUG")
+                        print("URL:", endpoint)
+                        print("STATUS:", response.status_code)
+                        print("RESPONSE HEADERS:", dict(response.headers))
+                        print("RESPONSE BODY:", repr(response.text))
                 except requests.RequestException as error:
                     print(f"Render heartbeat network error: {error}")
                 stop_sender.wait(5)
 
+    
     def send_frames_to_render():
-        """Forward one CAN frame per request to the Render endpoint."""
+        """Forward batches of CAN frames to Render."""
+
         if not render_url or not ingest_token:
-            print(
-                "Render forwarding disabled. Configure "
-                "RENDER_CAN_INGEST_URL and CAN_INGEST_TOKEN."
-            )
+            print("Render forwarding disabled.")
             return
 
         endpoint = f"{render_url}/api/ingest-can"
         headers = {"Authorization": f"Bearer {ingest_token}"}
 
+        BATCH_SIZE = 50
+        BATCH_WAIT = 0.05
+
         with requests.Session() as session:
             while not stop_sender.is_set() or not outgoing_frames.empty():
+
+                batch = []
+
                 try:
-                    frame = outgoing_frames.get(timeout=0.5)
+                    first_frame = outgoing_frames.get(timeout=0.5)
+                    batch.append(first_frame)
                 except queue.Empty:
                     continue
 
+                # Collect additional frames for this batch.
+                while len(batch) < BATCH_SIZE:
+                    try:
+                        batch.append(outgoing_frames.get_nowait())
+                    except queue.Empty:
+                        break
+
                 try:
-                    # Convert special DBC values to JSON-safe primitive values.
-                    safe_frame = json.loads(json.dumps(frame, default=str))
+                    safe_frames = json.loads(
+                        json.dumps(batch, default=str)
+                    )
 
                     response = session.post(
                         endpoint,
-                        json={"frame": safe_frame},
+                        json={"frames": safe_frames},
                         headers=headers,
                         timeout=15
                     )
 
-                    if not response.ok:
-                        print(
-                            f"Render forwarding error: HTTP "
-                            f"{response.status_code}: {response.text[:500]}"
-                        )
-                    else:
-                        print(
-                            f"Render accepted frame "
-                            f"{safe_frame.get('can_id', 'unknown')}"
-                        )
+                    response.raise_for_status()
+
+                    print(
+                        f"Render accepted {len(batch)} frames."
+                    )
 
                 except requests.RequestException as error:
-                    print(f"Render forwarding network error: {error}")
+                    print(f"Render batch forwarding error: {error}")
+
                 except (TypeError, ValueError) as error:
                     print(f"Frame JSON conversion error: {error}")
+
                 finally:
-                    outgoing_frames.task_done()
+                    for _ in batch:
+                        outgoing_frames.task_done()
+
 
     if render_url and ingest_token:
         sender_thread = threading.Thread(
