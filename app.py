@@ -357,9 +357,25 @@ def read_can_frames():
 @app.on_event("startup")
 def start_reader():
     global reader_thread
+
     load_dbc()
     stop_event.clear()
-    reader_thread = Thread(target=read_can_frames, daemon=True)
+
+    # Render is a cloud server; it cannot access local PCAN hardware.
+    is_render = os.getenv("RENDER") == "true"
+
+    if is_render:
+        can_status = {
+            "connected": False,
+            "message": "Waiting for CAN frames from local PCAN."
+        }
+        print("Cloud mode: waiting for incoming CAN frames.")
+        return
+
+    reader_thread = Thread(
+        target=read_can_frames,
+        daemon=True
+    )
     reader_thread.start()
 
 
