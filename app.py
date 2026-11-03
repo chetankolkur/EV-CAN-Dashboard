@@ -66,9 +66,14 @@ def create_signal_snapshot():
 
 
 
+# Set CLOUD_MODE=true in Render. The Render server must never try to open
+# the physical PCAN USB adapter attached to the user's laptop.
+CLOUD_MODE = os.getenv("CLOUD_MODE", "false").strip().lower() in {"1", "true", "yes"}
+last_gateway_heartbeat = None
+
 can_status = {
     "connected": False,
-    "message": "Waiting for CAN reader to start"
+    "message": "Waiting for local PCAN gateway" if CLOUD_MODE else "Waiting for CAN reader to start"
 }
 
 dbc_database = None
@@ -189,6 +194,24 @@ def read_can_frames():
 
     outgoing_frames = queue.Queue(maxsize=5000)
     stop_sender = threading.Event()
+    heartbeat_thread = None
+
+    def send_status_heartbeat():
+        """Tell Render that the local PCAN adapter is still connected."""
+        endpoint = f"{render_url}/api/ingest-status"
+        headers = {"Authorization": f"Bearer {ingest_token}"}
+        with requests.Session() as session:
+            while not stop_sender.is_set():
+                try:
+                    response = session.post(endpoint, headers=headers, timeout=5)
+                    if not response.ok:
+                        print(
+                            f"Render heartbeat error: HTTP "
+                            f"{response.status_code}: {response.text[:300]}"
+                        )
+                except requests.RequestException as error:
+                    print(f"Render heartbeat network error: {error}")
+                stop_sender.wait(5)
 
     def send_frames_to_render():
         """Forward one CAN frame per request to the Render endpoint."""
@@ -215,20 +238,16 @@ def read_can_frames():
 
                     response = session.post(
                         endpoint,
-                        json={"frames": [safe_frame]},
+                        json={"frame": safe_frame},
                         headers=headers,
                         timeout=15
                     )
 
                     if not response.ok:
-                        
-                            print(f"Render URL: {endpoint}")
-                            print(f"HTTP status: {response.status_code}")
-                            print(f"Response body: {response.content!r}")
-                            print(f"Response headers: {dict(response.headers)}")
-                            print(f"Sent frame fields: {list(safe_frame.keys())}")
-                            print(f"Sent payload: {response.request.body}")   
-                        
+                        print(
+                            f"Render forwarding error: HTTP "
+                            f"{response.status_code}: {response.text[:500]}"
+                        )
                     else:
                         print(
                             f"Render accepted frame "
@@ -267,6 +286,14 @@ def read_can_frames():
                 "message": "PCAN connected. Listening for frames."
             }
             print("PCAN connected. Listening for CAN frames...")
+
+            # Start a separate heartbeat only after the PCAN adapter opens.
+            if render_url and ingest_token:
+                heartbeat_thread = threading.Thread(
+                    target=send_status_heartbeat,
+                    daemon=True
+                )
+                heartbeat_thread.start()
 
             last_snapshot_time = time.time()
 
@@ -344,30 +371,22 @@ def read_can_frames():
         print(f"PCAN unavailable: {error}")
     finally:
         stop_sender.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=2)
 
 
 @app.on_event("startup")
 def start_reader():
     global reader_thread
-
     load_dbc()
-    stop_event.clear()
 
-    # Render is a cloud server; it cannot access local PCAN hardware.
-    is_render = os.getenv("RENDER") == "true"
-
-    if is_render:
-        can_status = {
-            "connected": False,
-            "message": "Waiting for CAN frames from local PCAN."
-        }
-        print("Cloud mode: waiting for incoming CAN frames.")
+    # Render is a receiver only. The physical PCAN reader runs on the laptop.
+    if CLOUD_MODE:
+        print("Cloud mode enabled: waiting for frames from the local PCAN gateway.")
         return
 
-    reader_thread = Thread(
-        target=read_can_frames,
-        daemon=True
-    )
+    stop_event.clear()
+    reader_thread = Thread(target=read_can_frames, daemon=True)
     reader_thread.start()
 
 
@@ -392,8 +411,18 @@ def get_can_data():
             key=lambda can_id: int(can_id, 16)
         )
 
+    status_snapshot = dict(can_status)
+    if CLOUD_MODE:
+        heartbeat_is_fresh = (
+            last_gateway_heartbeat is not None
+            and time.time() - last_gateway_heartbeat <= 15
+        )
+        status_snapshot["connected"] = heartbeat_is_fresh
+        if not heartbeat_is_fresh:
+            status_snapshot["message"] = "Waiting for heartbeat from the local PCAN gateway"
+
     return {
-        "status": can_status,
+        "status": status_snapshot,
         "dbc": dbc_status,
         "total_frames": len(current_frames),
         "total_unique_can_ids": len(current_ids),
@@ -407,13 +436,37 @@ def get_can_data():
 
 
 
+@app.post("/api/ingest-status")
+def ingest_gateway_status(
+    authorization: str | None = Header(default=None)
+):
+    """Receive a heartbeat from the laptop after its PCAN adapter connects."""
+    global can_status, last_gateway_heartbeat
+
+    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
+    supplied_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization
+        else ""
+    )
+    if not expected_token or not secrets.compare_digest(supplied_token, expected_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    last_gateway_heartbeat = time.time()
+    can_status = {
+        "connected": True,
+        "message": "PCAN connected on local laptop; cloud gateway is receiving heartbeat."
+    }
+    return {"ok": True, "pcan_connected": True}
+
+
 @app.post("/api/ingest-can")
 def ingest_can_frame(
     payload: dict,
     authorization: str | None = Header(default=None)
 ):
     """Accept one frame (legacy format) or a batch of frames from local PCAN."""
-    global can_status
+    global can_status, last_gateway_heartbeat
 
     expected_token = os.getenv("CAN_INGEST_TOKEN", "")
     supplied_token = (
@@ -475,11 +528,12 @@ def ingest_can_frame(
             frames.appendleft(frame)
             unique_can_ids.add(frame["can_id"])
 
+        last_gateway_heartbeat = time.time()
         can_status = {
             "connected": True,
             "message": (
-                f"Receiving CAN frames from local PCAN "
-                f"({len(incoming_frames)} in last batch)."
+                f"PCAN connected on local laptop; receiving "
+                f"{len(incoming_frames)} CAN frame(s)."
             )
         }
 
