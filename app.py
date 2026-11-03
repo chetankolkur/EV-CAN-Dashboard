@@ -191,7 +191,7 @@ def read_can_frames():
     stop_sender = threading.Event()
 
     def send_frames_to_render():
-        """Forward small batches of CAN frames to Render."""
+        """Forward one CAN frame per request to the Render endpoint."""
         if not render_url or not ingest_token:
             print(
                 "Render forwarding disabled. Configure "
@@ -201,54 +201,46 @@ def read_can_frames():
 
         endpoint = f"{render_url}/api/ingest-can"
         headers = {"Authorization": f"Bearer {ingest_token}"}
-        batch_size = 50
 
-        # Batch requests reduce HTTP overhead and help prevent queue buildup.
         with requests.Session() as session:
             while not stop_sender.is_set() or not outgoing_frames.empty():
-                batch = []
-
                 try:
-                    first_frame = outgoing_frames.get(timeout=0.5)
-                    batch.append(first_frame)
+                    frame = outgoing_frames.get(timeout=0.5)
                 except queue.Empty:
                     continue
 
-                # Collect any additional frames already waiting in the queue.
-                while len(batch) < batch_size:
-                    try:
-                        batch.append(outgoing_frames.get_nowait())
-                    except queue.Empty:
-                        break
-
                 try:
-                    # DBC choice values can include NamedSignalValue objects.
-                    # Convert the whole batch to JSON-safe primitive values.
-                    safe_batch = json.loads(json.dumps(batch, default=str))
+                    # Convert special DBC values to JSON-safe primitive values.
+                    safe_frame = json.loads(json.dumps(frame, default=str))
 
                     response = session.post(
                         endpoint,
-                        json={"frames": safe_batch},
+                        json={"frame": [safe_frame]},
                         headers=headers,
                         timeout=15
                     )
 
                     if not response.ok:
-                        print(
-                            f"Render forwarding error: HTTP "
-                            f"{response.status_code}: {response.text[:500]}"
-                        )
+                        
+                            print(f"Render URL: {endpoint}")
+                            print(f"HTTP status: {response.status_code}")
+                            print(f"Response body: {response.content!r}")
+                            print(f"Response headers: {dict(response.headers)}")
+                            print(f"Sent frame fields: {list(safe_frame.keys())}")
+                            print(f"Sent payload: {response.request.body}")   
+                        
                     else:
                         print(
-                            f"Render accepted {len(safe_batch)} CAN frame(s)."
+                            f"Render accepted frame "
+                            f"{safe_frame.get('can_id', 'unknown')}"
                         )
+
                 except requests.RequestException as error:
                     print(f"Render forwarding network error: {error}")
                 except (TypeError, ValueError) as error:
                     print(f"Frame JSON conversion error: {error}")
                 finally:
-                    for _ in batch:
-                        outgoing_frames.task_done()
+                    outgoing_frames.task_done()
 
     if render_url and ingest_token:
         sender_thread = threading.Thread(
