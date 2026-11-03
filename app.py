@@ -353,6 +353,7 @@ def read_can_frames():
                 with recording_lock:
                     if recording_active:
                         recorded_frames.append(frame.copy())
+                        
 
                         for signal in frame.get("decoded", []):
                             signal_name = signal["name"]
@@ -450,36 +451,13 @@ def get_can_data():
 
 
 
-@app.post("/api/ingest-status")
-def ingest_gateway_status(
-    authorization: str | None = Header(default=None)
-):
-    """Receive a heartbeat from the laptop after its PCAN adapter connects."""
-    global can_status, last_gateway_heartbeat
-
-    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
-    supplied_token = (
-        authorization.removeprefix("Bearer ").strip()
-        if authorization
-        else ""
-    )
-    if not expected_token or not secrets.compare_digest(supplied_token, expected_token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    last_gateway_heartbeat = time.time()
-    can_status = {
-        "connected": True,
-        "message": "PCAN connected on local laptop; cloud gateway is receiving heartbeat."
-    }
-    return {"ok": True, "pcan_connected": True}
-
 
 @app.post("/api/ingest-can")
 def ingest_can_frame(
     payload: dict,
     authorization: str | None = Header(default=None)
 ):
-    """Accept one frame (legacy format) or a batch of frames from local PCAN."""
+    """Receive CAN frames and store them for live display and cloud recording."""
     global can_status, last_gateway_heartbeat
 
     expected_token = os.getenv("CAN_INGEST_TOKEN", "")
@@ -494,7 +472,6 @@ def ingest_can_frame(
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Backward-compatible input: {"frame": {...}} or batch input {"frames": [...]}.
     if isinstance(payload.get("frames"), list):
         incoming_frames = payload["frames"]
     elif isinstance(payload.get("frame"), dict):
@@ -519,7 +496,6 @@ def ingest_can_frame(
         "decode_status"
     }
 
-    # Validate the complete batch before storing any part of it.
     for index, frame in enumerate(incoming_frames):
         if not isinstance(frame, dict):
             raise HTTPException(
@@ -537,6 +513,7 @@ def ingest_can_frame(
                 )
             )
 
+    # Update live dashboard data.
     with data_lock:
         for frame in incoming_frames:
             frames.appendleft(frame)
@@ -551,7 +528,58 @@ def ingest_can_frame(
             )
         }
 
-    return {"ok": True, "accepted": len(incoming_frames)}
+    # Store incoming frames and decoded signals during cloud recording.
+    with recording_lock:
+        if recording_active:
+            for frame in incoming_frames:
+                recorded_frames.append(frame.copy())
+
+                decoded_signals = frame.get("decoded", [])
+
+                if isinstance(decoded_signals, list):
+                    for signal in decoded_signals:
+                        if not isinstance(signal, dict):
+                            continue
+
+                        signal_name = signal.get("name")
+                        if signal_name is None:
+                            continue
+
+                        latest_signal_values[signal_name] = {
+                            "value": signal.get("value"),
+                            "can_id": frame["can_id"]
+                        }
+
+    # Generate a signal-history snapshot for CSV export.
+    create_signal_snapshot()
+
+    
+    # Save incoming frames when cloud recording is active.
+    with recording_lock:
+        if recording_active:
+            for frame in incoming_frames:
+                recorded_frames.append(frame.copy())
+
+                for signal in frame.get("decoded", []):
+                    signal_name = signal.get("name")
+
+                    if signal_name is not None:
+                        latest_signal_values[signal_name] = {
+                            "value": signal.get("value"),
+                            "can_id": frame["can_id"],
+                            "message_name": frame["message_name"],
+                            "timestamp": frame["timestamp"]
+                        }
+
+    # Create a signal snapshot for CSV export.
+    create_signal_snapshot()
+
+
+    return {
+        "ok": True,
+        "accepted": len(incoming_frames)
+    }
+
 
 
 @app.post("/api/recording/start")
