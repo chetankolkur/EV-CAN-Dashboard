@@ -215,7 +215,7 @@ def read_can_frames():
 
                     response = session.post(
                         endpoint,
-                        json={"frame": [safe_frame]},
+                        json={"frames": [safe_frame]},
                         headers=headers,
                         timeout=15
                     )
