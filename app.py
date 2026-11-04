@@ -202,6 +202,11 @@ def read_can_frames():
         headers = {"Authorization": f"Bearer {ingest_token}"}
         with requests.Session() as session:
             while not stop_sender.is_set():
+                # Stop refreshing Render's connection heartbeat after the
+                # local PCAN reader has detected a disconnect.
+                if not can_status.get("connected", False):
+                    stop_sender.wait(5)
+                    continue
                 try:
                     response = session.post(endpoint, headers=headers, timeout=5)
                     if not response.ok:
@@ -295,10 +300,15 @@ def read_can_frames():
             bitrate=500000,
             listen_only=True
         ) as bus:
-            can_status = {
-                "connected": True,
-                "message": "PCAN connected. Listening for frames."
-            }
+            # The adapter has opened successfully. We will also monitor
+            # incoming traffic so an unplugged/failed adapter is not shown
+            # as connected forever.
+            last_frame_received_at = time.time()
+            with data_lock:
+                can_status = {
+                    "connected": True,
+                    "message": "PCAN connected. Listening for frames."
+                }
             print("PCAN connected. Listening for CAN frames...")
 
             # Start a separate heartbeat only after the PCAN adapter opens.
@@ -326,7 +336,29 @@ def read_can_frames():
 
                 msg = bus.recv(timeout=0.1)
                 if msg is None:
+                    # No traffic for a while can mean the PCAN adapter was
+                    # unplugged or the CAN connection was lost. Mark the
+                    # dashboard disconnected after 3 seconds without frames.
+                    if time.time() - last_frame_received_at >= 3.0:
+                        with data_lock:
+                            # Remove old live frames so the dashboard cannot
+                            # continue displaying values from before disconnect.
+                            frames.clear()
+                            can_status = {
+                                "connected": False,
+                                "message": (
+                                    "No CAN frames received for 3 seconds. "
+                                    "Check the PCAN adapter and CAN bus."
+                                )
+                            }
                     continue
+
+                last_frame_received_at = time.time()
+                with data_lock:
+                    can_status = {
+                        "connected": True,
+                        "message": "PCAN connected. Receiving CAN frames."
+                    }
 
                 decoded = decode_frame(
                     msg.arbitration_id,
@@ -379,11 +411,14 @@ def read_can_frames():
                 )
 
     except Exception as error:
-        can_status = {
-            "connected": False,
-            "message": f"PCAN unavailable: {error}"
-        }
-        print(f"PCAN unavailable: {error}")
+        with data_lock:
+            # Clear stale live frames when the PCAN bus raises a disconnect error.
+            frames.clear()
+            can_status = {
+                "connected": False,
+                "message": f"PCAN disconnected/unavailable: {error}"
+            }
+        print(f"PCAN disconnected/unavailable: {error}")
     finally:
         stop_sender.set()
         if heartbeat_thread is not None:
@@ -434,7 +469,17 @@ def get_can_data():
         )
         status_snapshot["connected"] = heartbeat_is_fresh
         if not heartbeat_is_fresh:
-            status_snapshot["message"] = "Waiting for heartbeat from the local PCAN gateway"
+            status_snapshot["message"] = (
+                "PCAN adapter disconnected. No recent heartbeat from the local gateway."
+            )
+            # Do not expose old gateway frames after its heartbeat expires.
+            current_frames = []
+            current_ids = []
+
+    # The dashboard builds its live BMS cards from this frame list.
+    # Returning an empty list while disconnected clears stale signal cards.
+    if not status_snapshot.get("connected", False):
+        current_frames = []
 
     return {
         "status": status_snapshot,
