@@ -329,3 +329,52 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 8px 
         width: 100%;
     }
 }
+
+/* PCAN Gateway Setup Section */
+.gateway-panel {
+    margin-top: 24px;
+}
+
+.gateway-content {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.gateway-info,
+.gateway-download {
+    padding: 22px;
+    border: 1px solid var(--border-color, #2b3545);
+    border-radius: 12px;
+    background: var(--card-bg, #151d2b);
+}
+
+.gateway-info h3,
+.gateway-download h3 {
+    margin-top: 0;
+    margin-bottom: 14px;
+}
+
+.gateway-info ol {
+    padding-left: 22px;
+    line-height: 2;
+}
+
+.gateway-download {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+}
+
+.gateway-download-icon {
+    font-size: 36px;
+    margin-bottom: 12px;
+}
+
+@media (max-width: 768px) {
+    .gateway-content {
+        grid-template-columns: 1fr;
+    }
+}

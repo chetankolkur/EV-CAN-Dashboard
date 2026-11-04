@@ -1,0 +1,4 @@
+python-can>=4.4,<5
+cantools>=39,<41
+requests>=2.31,<3
+pyinstaller>=6.0,<7

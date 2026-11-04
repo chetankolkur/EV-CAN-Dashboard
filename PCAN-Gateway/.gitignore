@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.env
+logs/*
+!logs/.gitkeep
+
+# PCAN Gateway build artifacts
+PCAN-Gateway/.venv/
+PCAN-Gateway/build/
+PCAN-Gateway/dist/
+PCAN-Gateway/__pycache__/
+PCAN-Gateway/*.spec
+PCAN-Gateway/*.zip
+
+# PCAN Gateway runtime logs
+PCAN-Gateway/logs/*
+!PCAN-Gateway/logs/.gitkeep
+
+# Temporary alternate backend files
+app_pcan_disconnect_fixed.py
+app_pcan_live_values_cleared.py
