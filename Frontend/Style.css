@@ -342,12 +342,27 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 8px 
     margin-top: 24px;
 }
 
+/* PCAN Gateway - Improved Text Contrast */
+
 .gateway-info,
 .gateway-download {
     padding: 22px;
-    border: 1px solid var(--border-color, #2b3545);
+    border: 1px solid #dbe3ef;
     border-radius: 12px;
-    background: var(--card-bg, #151d2b);
+    background: #ffffff !important;
+    color: #263449 !important;
+}
+
+.gateway-info h3,
+.gateway-download h3 {
+    color: #111827 !important;
+}
+
+.gateway-info ol,
+.gateway-info li,
+.gateway-download p {
+    color: #263449 !important;
+    font-weight: 500;
 }
 
 .gateway-info h3,
@@ -377,4 +392,67 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 8px 
     .gateway-content {
         grid-template-columns: 1fr;
     }
+}
+
+/* PCAN Gateway Text Visibility Fix */
+
+.gateway-info,
+.gateway-download {
+    color: #e5e7eb !important;
+}
+
+.gateway-info h3,
+.gateway-download h3 {
+    color: #ffffff !important;
+}
+
+.gateway-info ol,
+.gateway-info li,
+.gateway-download p {
+    color: #cbd5e1 !important;
+}
+
+.gateway-download-button {
+    display: inline-block;
+    padding: 12px 22px;
+    margin-top: 12px;
+    background: #2563eb;
+    color: #ffffff !important;
+    text-decoration: none;
+    font-weight: 600;
+    border-radius: 8px;
+    transition: background 0.2s ease;
+}
+
+.gateway-download-button:hover {
+    background: #1d4ed8;
+}
+
+/* FINAL FIX: PCAN Gateway Text Contrast */
+
+body .gateway-panel .gateway-info,
+body .gateway-panel .gateway-download {
+    background-color: #ffffff !important;
+    color: #1f2937 !important;
+}
+
+body .gateway-panel .gateway-info h3,
+body .gateway-panel .gateway-download h3 {
+    color: #111827 !important;
+}
+
+body .gateway-panel .gateway-info ol,
+body .gateway-panel .gateway-info ol li,
+body .gateway-panel .gateway-download p {
+    color: #1f2937 !important;
+    opacity: 1 !important;
+    font-weight: 500 !important;
+}
+
+body .gateway-panel .gateway-info ol li::marker {
+    color: #1f2937 !important;
+}
+
+body .gateway-panel .gateway-download-button {
+    color: #ffffff !important;
 }
