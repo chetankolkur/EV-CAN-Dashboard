@@ -573,7 +573,7 @@ def ingest_can_frame(
             )
         }
 
-    # Store incoming frames and decoded signals during cloud recording.
+# Store incoming frames and decoded signals during cloud recording.
     with recording_lock:
         if recording_active:
             for frame in incoming_frames:
@@ -587,14 +587,15 @@ def ingest_can_frame(
                             continue
 
                         signal_name = signal.get("name")
-                        if signal_name is None:
+                        if not signal_name:
                             continue
 
                         latest_signal_values[signal_name] = {
                             "value": signal.get("value"),
-                            "can_id": frame["can_id"]
-                        }
-
+                            "can_id": frame.get("can_id"),
+                            "message_name": frame.get("message_name"),
+                            "timestamp": frame.get("timestamp")
+                 }
     # Generate a signal-history snapshot for CSV export.
     create_signal_snapshot()
 
