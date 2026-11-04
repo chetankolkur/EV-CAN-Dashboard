@@ -625,7 +625,37 @@ def ingest_can_frame(
         "accepted": len(incoming_frames)
     }
 
+@app.post("/api/ingest-status")
+def ingest_gateway_status(
+    authorization: str | None = Header(default=None)
+):
+    """Receive a heartbeat from the local PCAN gateway."""
+    global can_status, last_gateway_heartbeat
 
+    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
+
+    supplied_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization
+        else ""
+    )
+
+    if not expected_token or not secrets.compare_digest(
+        supplied_token, expected_token
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with data_lock:
+        last_gateway_heartbeat = time.time()
+        can_status = {
+            "connected": True,
+            "message": "Local PCAN gateway is connected."
+        }
+
+    return {
+        "ok": True,
+        "message": "Gateway heartbeat received."
+    }
 
 @app.post("/api/recording/start")
 def start_recording():
