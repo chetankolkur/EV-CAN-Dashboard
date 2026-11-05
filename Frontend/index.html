@@ -169,42 +169,54 @@
 
 
 
-            <section class="panel gateway-panel">
-            <div class="panel-heading">
-                <div>
-                    <div class="section-kicker">HARDWARE CONNECTION</div>
-                    <h2>Connect Your PCAN Gateway</h2>
-                    <p>
-                        To stream live CAN data from your own PCAN-USB adapter,
-                        install and run the Windows PCAN Gateway application.
-                    </p>
-                </div>
-                <span class="result-count">Windows</span>
-            </div>
 
-            <div class="gateway-content">
-                <div class="gateway-info">
-                    <h3>How to connect</h3>
-                    <ol>
-                        <li>Install the PEAK PCAN driver on your Windows computer.</li>
-                        <li>Connect your PCAN-USB adapter to the computer.</li>
-                        <li>Download and launch the PCAN Gateway application.</li>
-                        <li>Enter the dashboard connection details and authorized access token.</li>
-                        <li>Select your PCAN channel and CAN bitrate, then click Connect.</li>
-                    </ol>
-                </div>
+<section class="panel gateway-panel">
+    <div class="panel-heading">
+        <div>
+            <div class="section-kicker">HARDWARE CONNECTION</div>
+            <h2>Connect Your PCAN Gateway</h2>
+            <p>
+                To stream live CAN data from your PCAN-USB adapter,
+                download and run the Windows PCAN Gateway application.
+            </p>
+        </div>
+        <span class="result-count">Windows</span>
+    </div>
 
-                <div class="gateway-download">
-                    <div class="gateway-download-icon"></div>
-                    <h3>PCAN Gateway for Windows</h3>
-                    <p>The Windows application package is being prepared.</p>
-                    <span class="result-count"><a
-    href="https://github.com/chetankolkur/EV-CAN-Dashboard/releases/download/v1.0.0/EV-CAN-PCAN-Gateway-Windows.zip"
-    class="gateway-download-button"
-    download
->
-    Download for Windows
-</a>
+    <div class="gateway-content">
+        <div class="gateway-info">
+            <h3>How to connect</h3>
+            <ol>
+                <li>Install the PEAK PCAN driver on your Windows computer.</li>
+                <li>Connect your PCAN-USB adapter to the computer.</li>
+                <li>Download and launch the PCAN Gateway application.</li>
+                <li>The Gateway automatically registers securely with the dashboard. No manual access token is required.</li>
+                <li>Select your PCAN channel and CAN bitrate, then click <strong style="color: #111827; white-space: nowrap;">Start Gateway</strong>.</li>
+            </ol>
+        </div>
+
+        <div class="gateway-download">
+            <div class="gateway-download-icon"></div>
+            <h3>PCAN Gateway for Windows</h3>
+            <p>Download the latest Windows Gateway application. Secure registration and live CAN data streaming are handled automatically.</p>
+            <span class="result-count">
+                <a
+                    href="https://github.com/chetankolkur/EV-CAN-Dashboard/releases/download/v1.0.0/EV-CAN-PCAN-Gateway-Windows.zip"
+                    class="gateway-download-button"
+                    download
+                >
+                    Download for Windows
+                </a>
+            </span>
+        </div>
+    </div>
+
+    <p class="gateway-note">
+        Note: You can view the dashboard without installing the Gateway.
+        The Gateway is required only when streaming live CAN data from your own PCAN hardware.
+    </p>
+</section>
+
 </span>
                 </div>
             </div>
