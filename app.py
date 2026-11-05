@@ -13,6 +13,10 @@ import secrets
 import threading
 import queue
 import json
+import base64
+import hashlib
+import hmac
+import uuid
 
 from fastapi import Header, HTTPException
 
@@ -21,10 +25,148 @@ import cantools
 
 app = FastAPI(title="EV CAN Monitoring System")
 
+# --------------------------------------------------
+# GATEWAY DEVICE AUTHENTICATION
+# --------------------------------------------------
+
+GATEWAY_TOKEN_EXPIRY = 30 * 24 * 60 * 60  # 30 days
+
+
+def create_gateway_token():
+    """Generate a signed, expiring credential for a Gateway device."""
+
+    secret = os.getenv("GATEWAY_SIGNING_SECRET", "")
+
+    if len(secret) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Gateway authentication is not configured."
+        )
+
+    now = int(time.time())
+
+    payload = {
+        "device_id": uuid.uuid4().hex,
+        "iat": now,
+        "exp": now + GATEWAY_TOKEN_EXPIRY,
+        "scope": "gateway"
+    }
+
+    payload_bytes = json.dumps(
+        payload,
+        separators=(",", ":")
+    ).encode("utf-8")
+
+    encoded_payload = base64.urlsafe_b64encode(
+        payload_bytes
+    ).rstrip(b"=").decode("ascii")
+
+    signature = hmac.new(
+        secret.encode("utf-8"),
+        encoded_payload.encode("ascii"),
+        hashlib.sha256
+    ).digest()
+
+    encoded_signature = base64.urlsafe_b64encode(
+        signature
+    ).rstrip(b"=").decode("ascii")
+
+    return f"{encoded_payload}.{encoded_signature}", payload
+
+
+def verify_gateway_token(token):
+    """Verify a Gateway credential's signature, expiry and scope."""
+
+    secret = os.getenv("GATEWAY_SIGNING_SECRET", "")
+
+    if len(secret) < 32:
+        return False
+
+    try:
+        encoded_payload, encoded_signature = token.split(".")
+
+        expected_signature = hmac.new(
+            secret.encode("utf-8"),
+            encoded_payload.encode("ascii"),
+            hashlib.sha256
+        ).digest()
+
+        supplied_signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+
+        if not hmac.compare_digest(
+            expected_signature,
+            supplied_signature
+        ):
+            return False
+
+        payload_bytes = base64.urlsafe_b64decode(
+            encoded_payload + "=" * (-len(encoded_payload) % 4)
+        )
+
+        payload = json.loads(payload_bytes.decode("utf-8"))
+
+        return (
+            payload.get("scope") == "gateway"
+            and isinstance(payload.get("exp"), int)
+            and payload["exp"] > int(time.time())
+            and isinstance(payload.get("device_id"), str)
+        )
+
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+# --------------------------------------------------
+# GATEWAY REQUEST AUTHORIZATION
+# --------------------------------------------------
+
+def authorize_gateway_request(authorization):
+    """Accept a valid device credential or the legacy ingest token."""
+
+    supplied_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if authorization
+        else ""
+    )
+
+    # Preserve existing local backend authentication.
+    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
+
+    if expected_token and secrets.compare_digest(
+        supplied_token, expected_token
+    ):
+        return
+
+    # Accept newly issued Gateway credentials.
+    if supplied_token and verify_gateway_token(supplied_token):
+        return
+
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized"
+    )
+@app.post("/api/gateway/register")
+def register_gateway():
+    """Issue a signed credential to a new Gateway installation."""
+
+    access_token, payload = create_gateway_token()
+
+    return {
+        "ok": True,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": GATEWAY_TOKEN_EXPIRY,
+        "device_id": payload["device_id"]
+    }
+
+
+# Frontend configuration
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "Frontend"
 
-#confidential DBC file 
+# Confidential DBC file
 DBC_API_URL = "https://ke76ricmk3.execute-api.ap-south-1.amazonaws.com/prod/documents?path=version1&file=bms.dbc"
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
@@ -505,17 +647,7 @@ def ingest_can_frame(
     """Receive CAN frames and store them for live display and cloud recording."""
     global can_status, last_gateway_heartbeat
 
-    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
-    supplied_token = (
-        authorization.removeprefix("Bearer ").strip()
-        if authorization
-        else ""
-    )
-
-    if not expected_token or not secrets.compare_digest(
-        supplied_token, expected_token
-    ):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    authorize_gateway_request(authorization)
 
     if isinstance(payload.get("frames"), list):
         incoming_frames = payload["frames"]
@@ -633,19 +765,7 @@ def ingest_gateway_status(
     """Receive a heartbeat from the local PCAN gateway."""
     global can_status, last_gateway_heartbeat
 
-    expected_token = os.getenv("CAN_INGEST_TOKEN", "")
-
-    supplied_token = (
-        authorization.removeprefix("Bearer ").strip()
-        if authorization
-        else ""
-    )
-
-    if not expected_token or not secrets.compare_digest(
-        supplied_token, expected_token
-    ):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
+    authorize_gateway_request(authorization)
     with data_lock:
         last_gateway_heartbeat = time.time()
         can_status = {
